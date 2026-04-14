@@ -30,6 +30,6 @@ RUN npm install --omit=dev
 
 COPY . .
 
-EXPOSE 3001
+EXPOSE 3002
 
 CMD ["node", "server.js"]
