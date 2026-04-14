@@ -1,0 +1,1359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WhatsApp Task Finder</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+<script src="/socket.io/socket.io.js"></script>
+<style>
+/* ── Reset & Base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:          #0d1117;
+  --surface:     #161b22;
+  --card:        #1c2128;
+  --card-hover:  #22272e;
+  --green:       #25d366;
+  --ltgreen:     #00b894;
+  --green-glow:  rgba(37,211,102,0.14);
+  --green-border:rgba(37,211,102,0.30);
+  --text:        #e6edf3;
+  --text-2:      #adbac7;
+  --muted:       #768390;
+  --urgent:      #f85149;
+  --normal:      #e3b341;
+  --someday:     #3fb950;
+  --border:      #30363d;
+  --border-sub:  #21262d;
+  --radius:      12px;
+  --radius-lg:   16px;
+  --radius-xl:   24px;
+  --shadow:      0 4px 24px rgba(0,0,0,0.45);
+  --shadow-lg:   0 8px 48px rgba(0,0,0,0.65);
+}
+html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+button { cursor: pointer; font-family: inherit; border: none; outline: none; }
+input  { font-family: inherit; outline: none; }
+img    { display: block; }
+
+/* ── Screen Manager ── */
+.screen { display: none; min-height: 100vh; }
+.screen.active { display: flex; flex-direction: column; }
+
+/* ══════════════════════════════════════
+   SCREEN 1 — QR
+══════════════════════════════════════ */
+#screen-qr {
+  align-items: center; justify-content: center; padding: 32px 24px;
+  background: var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(37,211,102,0.12) 0%, transparent 60%);
+}
+
+.qr-logo {
+  font-size: 48px; margin-bottom: 16px;
+  filter: drop-shadow(0 0 24px rgba(37,211,102,0.4));
+  animation: pulse 2.5s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{transform:scale(1);filter:drop-shadow(0 0 20px rgba(37,211,102,0.35))} 50%{transform:scale(1.06);filter:drop-shadow(0 0 32px rgba(37,211,102,0.55))} }
+
+.qr-title {
+  font-size: 30px; font-weight: 800; color: var(--text);
+  margin-bottom: 8px; text-align: center; letter-spacing: -0.5px;
+}
+.qr-sub { font-size: 17px; color: var(--text-2); margin-bottom: 32px; text-align: center; max-width: 320px; line-height: 1.7; }
+
+.qr-card {
+  background: #fff; border-radius: var(--radius-xl); padding: 18px;
+  width: 232px; height: 232px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.08), var(--shadow-lg), 0 0 60px rgba(37,211,102,0.15);
+  margin-bottom: 20px; position: relative;
+}
+.qr-card img { width: 196px; height: 196px; border-radius: 6px; }
+.qr-spinner {
+  position: absolute; width: 44px; height: 44px;
+  border: 3px solid rgba(0,0,0,0.08);
+  border-top-color: var(--green);
+  border-radius: 50%; animation: spin 0.75s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.qr-status {
+  font-size: 15px; color: var(--green); margin-bottom: 20px;
+  font-weight: 500; min-height: 22px; text-align: center;
+}
+
+.qr-steps {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 20px 24px;
+  max-width: 320px; width: 100%;
+}
+.qr-steps h4 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; font-weight: 600; margin-bottom: 14px; }
+.step { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 12px; font-size: 15px; color: var(--text-2); line-height: 1.5; }
+.step-num {
+  min-width: 22px; height: 22px; background: var(--green); color: #000;
+  border-radius: 50%; font-weight: 700; font-size: 12px;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px;
+}
+.step:last-child { margin-bottom: 0; }
+
+.qr-footer { margin-top: 28px; font-size: 14px; color: var(--muted); }
+.qr-footer span { color: var(--green); font-weight: 600; }
+
+/* ══════════════════════════════════════
+   SCREEN 2 — SETUP
+══════════════════════════════════════ */
+#screen-setup { padding: 0; }
+
+.setup-header {
+  background: rgba(22,27,34,0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.setup-connected {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(37,211,102,0.1);
+  border: 1px solid var(--green-border);
+  border-radius: 30px; padding: 7px 18px;
+  font-size: 14px; font-weight: 600; color: var(--green);
+  margin-bottom: 14px;
+}
+.setup-connected::before { content: ''; width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 6px var(--green); }
+
+.setup-header h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; letter-spacing: -0.3px; }
+.setup-header p  { font-size: 15px; color: var(--text-2); }
+
+.setup-body { padding: 24px; flex: 1; overflow-y: auto; }
+
+.form-group { margin-bottom: 22px; }
+.form-label {
+  display: block; font-size: 14px; font-weight: 600;
+  color: var(--text-2); text-transform: uppercase;
+  letter-spacing: 0.8px; margin-bottom: 8px;
+}
+.form-input {
+  width: 100%; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 13px 16px; color: var(--text); font-size: 16px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.form-input:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(37,211,102,0.12);
+}
+.form-input::placeholder { color: var(--muted); }
+
+.chat-controls { display: flex; gap: 8px; margin-bottom: 10px; }
+.btn-sm {
+  padding: 8px 18px; border-radius: 20px;
+  font-size: 14px; font-weight: 600;
+  background: var(--surface); color: var(--text-2);
+  border: 1px solid var(--border); transition: all 0.15s;
+}
+.btn-sm:hover { background: var(--card-hover); color: var(--text); border-color: var(--text-2); }
+
+.chats-list {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+  max-height: 360px; overflow-y: auto;
+}
+.chat-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 16px; border-bottom: 1px solid var(--border-sub);
+  cursor: pointer; transition: background 0.12s; user-select: none;
+}
+.chat-item:last-child { border-bottom: none; }
+.chat-item:hover { background: var(--card); }
+.chat-item input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--green); cursor: pointer; }
+.chat-avatar {
+  width: 38px; height: 38px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 700; color: #000; flex-shrink: 0;
+}
+.chat-info { flex: 1; min-width: 0; }
+.chat-name { font-size: 16px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-meta { display: flex; gap: 5px; align-items: center; margin-top: 3px; }
+.badge { font-size: 13px; font-weight: 600; padding: 3px 9px; border-radius: 8px; }
+.badge-group    { background: rgba(37,211,102,0.12); color: var(--green); }
+.badge-personal { background: rgba(139,148,158,0.12); color: var(--text-2); }
+.badge-unread   { background: var(--green); color: #000; min-width: 20px; text-align: center; border-radius: 10px; }
+
+.chats-loading { padding: 40px; text-align: center; color: var(--muted); font-size: 16px; }
+
+.setup-footer {
+  padding: 14px 24px 24px;
+  background: rgba(13,17,23,0.9);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+  position: sticky; bottom: 0;
+}
+.selected-count { font-size: 14px; color: var(--muted); margin-bottom: 10px; }
+.btn-primary {
+  width: 100%; padding: 15px;
+  background: linear-gradient(135deg, #25D366 0%, #00a884 100%);
+  color: #000; font-size: 16px; font-weight: 700;
+  border-radius: var(--radius); transition: all 0.2s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  box-shadow: 0 4px 16px rgba(37,211,102,0.25);
+  letter-spacing: -0.2px;
+}
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(37,211,102,0.35);
+  background: linear-gradient(135deg, #2ee872 0%, #00c49a 100%);
+}
+.btn-primary:active:not(:disabled) { transform: translateY(0); }
+.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* ══════════════════════════════════════
+   SCREEN 3 — LOADING
+══════════════════════════════════════ */
+#screen-loading {
+  align-items: center; justify-content: center;
+  background: var(--bg);
+  background-image: radial-gradient(ellipse 70% 50% at 50% 50%, rgba(37,211,102,0.07) 0%, transparent 70%);
+}
+.loading-inner { text-align: center; padding: 32px 24px; max-width: 320px; width: 100%; }
+
+.loading-ring {
+  width: 72px; height: 72px;
+  border-radius: 50%;
+  border: 3px solid var(--border);
+  border-top-color: var(--green);
+  border-right-color: rgba(37,211,102,0.4);
+  animation: spin 0.9s cubic-bezier(0.68,-0.55,0.27,1.55) infinite;
+  margin: 0 auto 28px;
+  box-shadow: 0 0 24px rgba(37,211,102,0.2);
+}
+
+.loading-msg {
+  font-size: 20px; font-weight: 600; color: var(--text);
+  min-height: 30px; margin-bottom: 10px;
+  transition: opacity 0.3s; letter-spacing: -0.2px;
+}
+.loading-sub { font-size: 15px; color: var(--muted); margin-bottom: 36px; line-height: 1.6; }
+.progress-bar-wrap {
+  background: var(--surface); border-radius: 30px;
+  overflow: hidden; height: 4px;
+  border: 1px solid var(--border);
+}
+.progress-bar {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--green), var(--ltgreen));
+  border-radius: 30px; transition: width 0.5s ease;
+  box-shadow: 0 0 8px rgba(37,211,102,0.5);
+}
+
+/* ══════════════════════════════════════
+   SCREEN 4 — RESULTS
+══════════════════════════════════════ */
+#screen-results { padding: 0; overflow-y: auto; }
+
+.results-header {
+  background: rgba(22,27,34,0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20;
+}
+.results-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.results-title { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+.btn-back {
+  background: var(--surface); color: var(--text-2);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 18px; font-size: 14px; font-weight: 600; transition: all 0.15s;
+}
+.btn-back:hover { color: var(--text); border-color: var(--text-2); background: var(--card-hover); }
+
+.btn-rescan {
+  background: rgba(59,130,246,0.1); color: #79b8ff;
+  border: 1px solid rgba(96,165,250,0.3); border-radius: var(--radius);
+  padding: 8px 18px; font-size: 14px; font-weight: 600; transition: all 0.15s;
+}
+.btn-rescan:hover { background: rgba(59,130,246,0.2); border-color: rgba(96,165,250,0.5); }
+.results-top-actions { display: flex; gap: 8px; align-items: center; }
+
+.batch-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px;
+  background: rgba(37,211,102,0.07);
+  border-bottom: 1px solid var(--green-border);
+  font-size: 14px; color: var(--green); font-weight: 500;
+}
+.batch-spinner {
+  width: 10px; height: 10px; flex-shrink: 0;
+  border: 2px solid rgba(37,211,102,0.25);
+  border-top-color: var(--green);
+  border-radius: 50%; animation: spin 0.6s linear infinite;
+}
+
+.stats-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.stat-pill {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; padding: 6px 14px;
+  font-size: 14px; font-weight: 600;
+}
+.stat-pill .dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot-urgent  { background: var(--urgent);  box-shadow: 0 0 6px var(--urgent); }
+.dot-normal  { background: var(--normal);  box-shadow: 0 0 6px var(--normal); }
+.dot-someday { background: var(--someday); box-shadow: 0 0 6px var(--someday); }
+.dot-total   { background: var(--muted); }
+.scanned-info { font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+
+.filter-tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.filter-tabs::-webkit-scrollbar { display: none; }
+.tab {
+  padding: 8px 16px; border-radius: 20px;
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+  background: transparent; color: var(--text-2);
+  border: 1px solid transparent; transition: all 0.15s;
+}
+.tab:hover { background: var(--card); color: var(--text); }
+.tab.active { background: var(--green-glow); color: var(--green); border-color: var(--green-border); }
+.tab-count {
+  display: inline-block; background: rgba(255,255,255,0.12);
+  border-radius: 10px; padding: 1px 6px; font-size: 12px; margin-left: 3px;
+}
+.tab.active .tab-count { background: rgba(37,211,102,0.2); }
+
+.search-wrap {
+  padding: 12px 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-sub);
+}
+.search-input {
+  width: 100%; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 16px; color: var(--text); font-size: 16px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.search-input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(37,211,102,0.1); }
+.search-input::placeholder { color: var(--muted); }
+
+.tasks-list { padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+
+/* Task card */
+.task-card { perspective: 1000px; position: relative; min-height: 150px; }
+.task-card-inner {
+  position: relative; width: 100%; transform-style: preserve-3d;
+  transition: transform 0.6s cubic-bezier(.4,0,.2,1), max-height 0.4s ease, opacity 0.4s ease;
+}
+.task-card-front, .task-card-back {
+  backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  border-radius: var(--radius-lg); width: 100%;
+}
+.task-card-front {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-top-width: 3px;
+  padding: 16px;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.task-card:hover .task-card-front { transform: translateY(-1px); box-shadow: var(--shadow); }
+.task-card-front.urgent  { border-top-color: var(--urgent);  }
+.task-card-front.normal  { border-top-color: var(--normal);  }
+.task-card-front.someday { border-top-color: var(--someday); }
+
+/* match-type side accent */
+.task-card-front.match-tagged { box-shadow: inset 3px 0 0 #fb923c, 0 0 0 1px rgba(251,146,60,0.15); }
+.task-card-front.match-role   { box-shadow: inset 3px 0 0 #60a5fa, 0 0 0 1px rgba(96,165,250,0.15); }
+.task-card-front.match-named  { box-shadow: inset 3px 0 0 #4ade80, 0 0 0 1px rgba(74,222,128,0.12); }
+
+.task-card-back {
+  position: absolute; top: 0; left: 0;
+  background: rgba(37,211,102,0.06);
+  border: 1px solid var(--green-border);
+  transform: rotateY(180deg);
+  display: flex; align-items: center; justify-content: center;
+  min-height: 150px; border-radius: var(--radius-lg);
+}
+.done-icon { font-size: 64px; animation: popIn 0.4s ease; }
+@keyframes popIn { 0%{transform:scale(0)} 70%{transform:scale(1.15)} 100%{transform:scale(1)} }
+
+.task-card.flipped .task-card-inner { transform: rotateY(180deg); }
+.task-card.collapsed .task-card-inner { max-height: 0; opacity: 0; overflow: hidden; }
+
+/* card content */
+.card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.priority-badge {
+  font-size: 13px; font-weight: 700; padding: 4px 11px;
+  border-radius: 8px; text-transform: uppercase; letter-spacing: 0.6px;
+}
+.priority-badge.urgent  { background: rgba(248,81,73,0.15);  color: var(--urgent); }
+.priority-badge.normal  { background: rgba(227,179,65,0.15); color: var(--normal); }
+.priority-badge.someday { background: rgba(63,185,80,0.15);  color: var(--someday); }
+
+.match-badge {
+  font-size: 13px; font-weight: 700; padding: 4px 11px; border-radius: 8px;
+}
+.match-badge.tagged { background: rgba(251,146,60,0.12); color: #fb923c; }
+.match-badge.role   { background: rgba(96,165,250,0.12);  color: #60a5fa; }
+.match-badge.named  { background: rgba(74,222,128,0.12);  color: #4ade80; }
+.badge-carried { background: rgba(167,139,250,0.14); color: #a78bfa; border: 1px solid rgba(167,139,250,0.25); }
+
+.chat-name-tag {
+  font-size: 13px; color: var(--text-2); background: var(--surface);
+  border-radius: 8px; padding: 4px 10px; border: 1px solid var(--border-sub);
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.card-date { font-size: 13px; color: var(--muted); margin-left: auto; }
+
+.card-assignee { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #000; flex-shrink: 0;
+}
+.assignee-name { font-size: 14px; color: var(--text-2); }
+.assignee-name strong { color: var(--text); font-weight: 600; }
+
+.card-task { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 10px; line-height: 1.55; }
+.card-original {
+  font-size: 14px; color: var(--muted); font-style: italic;
+  line-height: 1.65; margin-bottom: 14px;
+  padding: 10px 14px; background: var(--surface);
+  border-radius: 8px; border-left: 2px solid var(--border);
+}
+
+.btn-done {
+  padding: 9px 20px; border-radius: 20px;
+  background: rgba(37,211,102,0.1); color: var(--green);
+  border: 1px solid var(--green-border);
+  font-size: 14px; font-weight: 600;
+  transition: all 0.2s;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.btn-done:hover { background: rgba(37,211,102,0.2); }
+.btn-done:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-spinner {
+  width: 12px; height: 12px;
+  border: 2px solid rgba(37,211,102,0.3);
+  border-top-color: var(--green);
+  border-radius: 50%; animation: spin 0.6s linear infinite;
+}
+
+/* Empty state */
+.empty-state { text-align: center; padding: 60px 24px; }
+.empty-emoji { font-size: 64px; margin-bottom: 16px; filter: grayscale(0.2); }
+.empty-title { font-size: 24px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.3px; }
+.empty-sub   { font-size: 16px; color: var(--text-2); line-height: 1.6; }
+
+/* Toast */
+#toast {
+  position: fixed; top: 20px; right: 20px;
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--text); border-radius: var(--radius);
+  padding: 14px 22px; font-size: 15px; font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  transform: translateX(calc(100% + 32px));
+  transition: transform 0.3s cubic-bezier(.4,0,.2,1);
+  z-index: 999; max-width: 280px;
+}
+#toast.show { transform: translateX(0); }
+
+/* Celebration */
+#celebration {
+  display: none; position: fixed; inset: 0;
+  background: rgba(13,17,23,0.97);
+  z-index: 998; align-items: center; justify-content: center;
+  flex-direction: column; text-align: center;
+}
+#celebration.show { display: flex; }
+.celeb-emoji { font-size: 80px; animation: bounce 0.7s ease infinite alternate; }
+@keyframes bounce { to { transform: translateY(-18px); } }
+.celeb-title { font-size: 34px; font-weight: 800; color: var(--green); margin: 16px 0 8px; letter-spacing: -0.5px; }
+.celeb-sub   { font-size: 18px; color: var(--text-2); margin-bottom: 28px; }
+.celeb-rain  { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.emoji-drop  { position: absolute; top: -60px; font-size: 26px; animation: fall linear infinite; }
+@keyframes fall { to { transform: translateY(110vh) rotate(360deg); } }
+.btn-celeb {
+  background: linear-gradient(135deg, var(--green), var(--ltgreen));
+  color: #000; border-radius: 30px; padding: 12px 32px;
+  font-size: 15px; font-weight: 700;
+  box-shadow: 0 4px 20px rgba(37,211,102,0.3);
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+
+/* ── Mobile ── */
+@media (max-width: 600px) {
+  .tasks-list   { padding: 12px; gap: 8px; }
+  .results-header { padding: 12px 14px; }
+  .search-wrap  { padding: 10px 14px; }
+  .qr-title     { font-size: 22px; }
+  .qr-card      { width: 200px; height: 200px; }
+  .qr-card img  { width: 164px; height: 164px; }
+  #toast { top: auto; bottom: 20px; right: 14px; left: 14px; max-width: none; transform: translateY(120px); }
+  #toast.show { transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ SCREEN 1: QR / Connecting ══ -->
+<section id="screen-qr" class="screen active">
+  <div class="qr-logo">💬</div>
+  <h1 class="qr-title">WhatsApp Task Finder</h1>
+
+  <!-- Shown only while connecting (before we know if login is needed) -->
+  <div id="connectingState">
+    <p class="qr-status" id="qrStatus">Connecting to server…</p>
+  </div>
+
+  <!-- Shown only when server actually sends a QR code (not logged in) -->
+  <div id="qrState" style="display:none;text-align:center;">
+    <p class="qr-sub">Scan the QR code with your WhatsApp to connect</p>
+    <div class="qr-card" id="qrCard">
+      <div class="qr-spinner" id="qrSpinner"></div>
+      <img id="qrImage" src="" alt="QR Code" style="display:none" />
+    </div>
+    <p class="qr-status" id="qrStatusScan">Scan with your phone</p>
+    <p id="qrExpiry" style="font-size:12px;color:var(--muted);margin-bottom:12px;display:none;">QR expires in <span id="qrCountdown">20</span>s — refresh the page if it expires</p>
+    <div class="qr-steps">
+      <h4>How to scan</h4>
+      <div class="step"><span class="step-num">1</span><span>Open WhatsApp on your phone</span></div>
+      <div class="step"><span class="step-num">2</span><span>Tap Menu (⋮) → Linked Devices</span></div>
+      <div class="step"><span class="step-num">3</span><span>Tap "Link a Device"</span></div>
+      <div class="step"><span class="step-num">4</span><span>Point your camera at the QR code above</span></div>
+    </div>
+  </div>
+
+  <p class="qr-footer">Developed by <span>Payal</span></p>
+</section>
+
+<!-- ══ SCREEN 2: SETUP ══ -->
+<section id="screen-setup" class="screen">
+  <div class="setup-header">
+    <div class="setup-connected">WhatsApp Connected</div>
+    <h1>Find Your Tasks</h1>
+    <p>Enter your name and choose which chats to scan &nbsp;·&nbsp; <span style="color:var(--green);font-weight:600;">Last 3 days · read + unread</span></p>
+    <p id="lastScanInfo" style="display:none;margin-top:6px;font-size:13px;color:var(--green);font-weight:500;"></p>
+    <p id="pendingHint" style="display:none;margin-top:2px;font-size:13px;color:var(--someday);"></p>
+  </div>
+
+  <div class="setup-body">
+    <div class="form-group">
+      <label class="form-label">Your name in WhatsApp chats</label>
+      <input id="userName" class="form-input" type="text" placeholder="e.g. Payal" autocomplete="off" />
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Your role / designation <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+      <input id="userDesignation" class="form-input" type="text" placeholder="e.g. Designer, Manager, Accounts, Developer" autocomplete="off" />
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Select chats to scan</label>
+      <div class="chat-controls">
+        <button class="btn-sm" id="btnSelectAll">Select All</button>
+        <button class="btn-sm" id="btnDeselectAll">Deselect All</button>
+      </div>
+      <div class="chats-list" id="chatsList">
+        <div class="chats-loading">Loading chats…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="setup-footer">
+    <p class="selected-count" id="selectedCount">0 chats selected</p>
+    <button class="btn-primary" id="btnAnalyze" disabled>
+      🔍 Find My Tasks
+    </button>
+  </div>
+</section>
+
+<!-- ══ SCREEN 3: LOADING ══ -->
+<section id="screen-loading" class="screen">
+  <div class="loading-inner">
+    <div class="loading-ring"></div>
+    <p class="loading-msg" id="loadingMsg">Connecting to your chats…</p>
+    <p class="loading-sub">This may take a moment for large chats</p>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ SCREEN 4: RESULTS ══ -->
+<section id="screen-results" class="screen">
+  <div class="results-header">
+    <div class="results-top">
+      <h2 class="results-title">Your Tasks</h2>
+      <div class="results-top-actions">
+        <button class="btn-rescan" id="btnFullRescan" style="display:none">↺ Full Rescan</button>
+        <button class="btn-back" id="btnBack">← Back</button>
+      </div>
+    </div>
+
+    <div class="stats-bar" id="statsBar">
+      <div class="stat-pill"><span class="dot dot-urgent"></span><span id="statUrgent">0 Urgent</span></div>
+      <div class="stat-pill"><span class="dot dot-normal"></span><span id="statNormal">0 Normal</span></div>
+      <div class="stat-pill"><span class="dot dot-someday"></span><span id="statSomeday">0 Someday</span></div>
+      <div class="stat-pill"><span class="dot dot-total"></span><span id="statTotal">Total: 0</span></div>
+    </div>
+    <p class="scanned-info" id="scannedInfo"></p>
+
+    <div class="filter-tabs" id="filterTabs">
+      <button class="tab active" data-filter="all">All <span class="tab-count" id="tabAll">0</span></button>
+      <button class="tab" data-filter="tagged">🏷️ Tagged <span class="tab-count" id="tabTagged">0</span></button>
+      <button class="tab" data-filter="named">👤 Named <span class="tab-count" id="tabNamed">0</span></button>
+      <button class="tab" data-filter="role">💼 Role <span class="tab-count" id="tabRole">0</span></button>
+      <button class="tab" data-filter="urgent">🔴 Urgent <span class="tab-count" id="tabUrgent">0</span></button>
+      <button class="tab" data-filter="done">✅ Done <span class="tab-count" id="tabDone">0</span></button>
+    </div>
+  </div>
+
+  <div id="batchBanner" style="display:none" class="batch-banner">
+    <span class="batch-spinner"></span>
+    <span id="batchBannerText">Loading more chats…</span>
+  </div>
+
+  <div class="search-wrap">
+    <input class="search-input" id="searchInput" type="text" placeholder="🔍 Search tasks…" />
+  </div>
+
+  <div class="tasks-list" id="tasksList"></div>
+</section>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Celebration overlay -->
+<div id="celebration">
+  <div class="celeb-rain" id="celebRain"></div>
+  <span class="celeb-emoji">🏆</span>
+  <h2 class="celeb-title">You're a legend!</h2>
+  <p class="celeb-sub">All tasks complete! You crushed it 🎉</p>
+  <button class="btn-celeb" id="btnCelebClose">Start Over</button>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+//   STATE
+// ══════════════════════════════════════════════
+const state = {
+  allTasks: [],
+  doneTasks: new Set(),
+  currentFilter: 'all',
+  searchQuery: '',
+  currentUserName: '',
+  currentUserDesignation: '',
+  totalChats: 0,
+  totalMessages: 0,
+  lastChatIds: [],
+  isStreaming: false,
+  totalBatches: 0,
+  batchesComplete: 0,
+  isIncremental: false,
+  lastScanTime: null
+};
+
+// ══════════════════════════════════════════════
+//   SCREEN MANAGER
+// ══════════════════════════════════════════════
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+// ══════════════════════════════════════════════
+//   SOCKET.IO
+// ══════════════════════════════════════════════
+const socket = io();
+
+socket.on('connect', () => {
+  document.getElementById('qrStatus').textContent = 'Connected — checking WhatsApp session…';
+});
+socket.on('disconnect', () => {
+  document.getElementById('qrStatus').textContent = 'Disconnected from server. Refresh to retry.';
+});
+
+socket.on('loading', ({ message }) => {
+  if (document.getElementById('screen-qr').classList.contains('active')) {
+    // Only update the connecting-state status (not the QR scan status)
+    const el = document.getElementById('qrStatus');
+    if (el) el.textContent = message;
+  } else if (document.getElementById('screen-loading').classList.contains('active')) {
+    const el = document.getElementById('loadingMsg');
+    el.style.opacity = '0';
+    setTimeout(() => { el.textContent = message; el.style.opacity = '1'; }, 150);
+  }
+});
+
+socket.on('progress', ({ message, percent }) => {
+  if (!document.getElementById('screen-loading').classList.contains('active')) return;
+  const el = document.getElementById('loadingMsg');
+  el.style.opacity = '0';
+  setTimeout(() => { el.textContent = message; el.style.opacity = '1'; }, 150);
+  document.getElementById('progressBar').style.width = percent + '%';
+});
+
+let qrCountdownTimer;
+socket.on('qr', ({ image }) => {
+  // Reveal the full QR UI (hidden until now)
+  document.getElementById('connectingState').style.display = 'none';
+  document.getElementById('qrState').style.display = 'block';
+
+  const img     = document.getElementById('qrImage');
+  const spinner = document.getElementById('qrSpinner');
+  img.src = image;
+  img.style.display = 'block';
+  spinner.style.display = 'none';
+
+  // Start countdown
+  const expiryEl    = document.getElementById('qrExpiry');
+  const countdownEl = document.getElementById('qrCountdown');
+  expiryEl.style.display = 'block';
+  let secs = 20;
+  countdownEl.textContent = secs;
+  clearInterval(qrCountdownTimer);
+  qrCountdownTimer = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(qrCountdownTimer);
+      countdownEl.textContent = '0';
+      document.getElementById('qrStatusScan').textContent = 'QR expired — waiting for new code…';
+    } else {
+      countdownEl.textContent = secs;
+    }
+  }, 1000);
+});
+
+socket.on('ready', async () => {
+  // Pre-fill remembered name and designation
+  const savedName = localStorage.getItem('wa_userName') || '';
+  const savedDesig = localStorage.getItem('wa_designation') || '';
+  if (savedName) document.getElementById('userName').value = savedName;
+  if (savedDesig) document.getElementById('userDesignation').value = savedDesig;
+
+  // Show last scan info on setup screen
+  try {
+    const s = await fetch('/api/scan-status').then(r => r.json());
+    state.lastScanTime = s.lastScanTime;
+    const lastScanEl = document.getElementById('lastScanInfo');
+    if (lastScanEl && s.lastScanTime) {
+      const ago = timeSince(s.lastScanTime);
+      const mode = (() => {
+        const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+        return (Date.now() - s.lastScanTime < THREE_DAYS_MS)
+          ? `▶ Next scan: new messages only (since ${ago})`
+          : `▶ Next scan: full 3-day scan`;
+      })();
+      lastScanEl.textContent = mode;
+      lastScanEl.style.display = 'block';
+      if (s.pendingCount > 0) {
+        document.getElementById('pendingHint').textContent =
+          `${s.pendingCount} previous task(s) will load instantly`;
+        document.getElementById('pendingHint').style.display = 'block';
+      }
+    }
+  } catch {}
+
+  showScreen('screen-setup');
+  loadChats();
+});
+
+socket.on('auth_failure', ({ message }) => {
+  document.getElementById('qrStatus').textContent = '❌ Auth failed: ' + message;
+});
+
+socket.on('scan_mode', ({ isIncremental, messageCutoff, lastScanTime }) => {
+  state.isIncremental = isIncremental;
+  state.lastScanTime  = lastScanTime;
+});
+
+// ══════════════════════════════════════════════
+//   SCREEN 2 — SETUP
+// ══════════════════════════════════════════════
+const avatarColors = ['#25D366','#00a884','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899'];
+
+function avatarColor(name) {
+  let h = 0;
+  for (let c of (name || '?')) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  return avatarColors[h % avatarColors.length];
+}
+
+async function loadChats() {
+  const list = document.getElementById('chatsList');
+  list.innerHTML = '<div class="chats-loading">Loading chats…</div>';
+  try {
+    const res = await fetch('/api/chats');
+    const chats = await res.json();
+    if (!chats.length) {
+      list.innerHTML = '<div class="chats-loading">No chats found.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    chats.forEach(chat => {
+      const item = document.createElement('div');
+      item.className = 'chat-item';
+      item.dataset.id = chat.id;
+      const initials = (chat.name || '?').charAt(0).toUpperCase();
+      const color = avatarColor(chat.name);
+      item.innerHTML = `
+        <input type="checkbox" class="chat-checkbox" data-id="${chat.id}" />
+        <div class="chat-avatar" style="background:${color}">${initials}</div>
+        <div class="chat-info">
+          <div class="chat-name">${escHtml(chat.name)}</div>
+          <div class="chat-meta">
+            <span class="badge ${chat.isGroup ? 'badge-group' : 'badge-personal'}">${chat.isGroup ? 'Group' : 'Personal'}</span>
+            ${chat.unreadCount > 0 ? `<span class="badge badge-unread">${chat.unreadCount}</span>` : ''}
+          </div>
+        </div>`;
+      item.addEventListener('click', e => {
+        if (e.target.tagName !== 'INPUT') {
+          const cb = item.querySelector('.chat-checkbox');
+          cb.checked = !cb.checked;
+          cb.dispatchEvent(new Event('change'));
+        }
+      });
+      item.querySelector('.chat-checkbox').addEventListener('change', updateSelectedCount);
+      list.appendChild(item);
+    });
+    updateSelectedCount();
+  } catch (err) {
+    list.innerHTML = `<div class="chats-loading">Error loading chats: ${err.message}</div>`;
+  }
+}
+
+function updateSelectedCount() {
+  const checked = document.querySelectorAll('.chat-checkbox:checked').length;
+  document.getElementById('selectedCount').textContent = `${checked} chat${checked !== 1 ? 's' : ''} selected`;
+  const nameOk = document.getElementById('userName').value.trim().length > 0;
+  document.getElementById('btnAnalyze').disabled = !(checked > 0 && nameOk);
+}
+
+document.getElementById('userName').addEventListener('input', updateSelectedCount);
+
+document.getElementById('btnSelectAll').addEventListener('click', () => {
+  document.querySelectorAll('.chat-checkbox').forEach(cb => { cb.checked = true; });
+  updateSelectedCount();
+});
+document.getElementById('btnDeselectAll').addEventListener('click', () => {
+  document.querySelectorAll('.chat-checkbox').forEach(cb => { cb.checked = false; });
+  updateSelectedCount();
+});
+
+// ══════════════════════════════════════════════
+//   SCREEN 3 — LOADING ANIMATION
+// ══════════════════════════════════════════════
+function getLoadingMessages(isFirstScan) {
+  return [
+    'Connecting to your chats…',
+    'Reading all messages — read & unread, no time limit…',
+    'Filtering relevant messages…',
+    'Looking for your name and @mentions…',
+    'Checking for role tags and assignments…',
+    'Almost there…'
+  ];
+}
+
+function startLoadingAnimation() {
+  const loadingMessages = getLoadingMessages();
+  let idx = 0;
+  let progress = 0;
+  const msgEl = document.getElementById('loadingMsg');
+  const bar = document.getElementById('progressBar');
+
+  bar.style.width = '0%';
+  msgEl.textContent = loadingMessages[0];
+
+  const msgInterval = setInterval(() => {
+    idx = (idx + 1) % loadingMessages.length;
+    msgEl.style.opacity = '0';
+    setTimeout(() => {
+      msgEl.textContent = loadingMessages[idx];
+      msgEl.style.opacity = '1';
+    }, 200);
+  }, 2200);
+
+  const progressInterval = setInterval(() => {
+    progress = Math.min(progress + (100 / 20), 95);
+    bar.style.width = progress + '%';
+  }, 500);
+
+  return () => {
+    clearInterval(msgInterval);
+    clearInterval(progressInterval);
+    bar.style.width = '100%';
+  };
+}
+
+// ══════════════════════════════════════════════
+//   ANALYZE
+// ══════════════════════════════════════════════
+async function doAnalyze(chatIds, userName, userDesignation) {
+  state.currentUserName = userName;
+  state.currentUserDesignation = userDesignation;
+  state.lastChatIds = chatIds;
+  state.allTasks = [];
+  state.doneTasks = new Set();
+  state.currentFilter = 'all';
+  state.searchQuery = '';
+  state.isStreaming = true;
+  state.totalBatches = 0;
+  state.batchesComplete = 0;
+  state.isIncremental = false;
+
+  // Clean up any listeners from a previous run
+  socket.off('pending_tasks');
+  socket.off('tasks_batch');
+  socket.off('analyze_error');
+
+  showScreen('screen-loading');
+  const stopLoading = startLoadingAnimation();
+
+  let resultsShown = false;
+  const seenTaskKeys = new Set(); // cross-batch client-side dedup
+
+  // Old undone tasks from previous scans arrive before new batches start
+  socket.on('pending_tasks', ({ tasks }) => {
+    const prev = tasks.filter(t => {
+      const key = t.messageId || (t.task || '').trim().slice(0, 30).toLowerCase();
+      if (!key || seenTaskKeys.has(key)) return false;
+      seenTaskKeys.add(key);
+      return true;
+    });
+    if (prev.length > 0) {
+      const existing = state.allTasks;
+      state.allTasks = [...existing, ...prev];
+      if (!resultsShown) {
+        resultsShown = true;
+        stopLoading();
+        showScreen('screen-results');
+      }
+      renderResults();
+    }
+  });
+
+  socket.on('tasks_batch', ({ tasks, chatsComplete, totalChats, totalMessages, done, isIncremental }) => {
+    state.totalBatches = totalChats;
+    state.batchesComplete = chatsComplete;
+    state.totalChats = totalChats;
+    state.totalMessages = totalMessages;
+    state.isStreaming = !done;
+    if (isIncremental !== undefined) state.isIncremental = isIncremental;
+
+    // Deduplicate against tasks already added from previous batches
+    const newTasks = tasks.filter(t => {
+      const key = t.messageId || (t.task || '').trim().slice(0, 30).toLowerCase();
+      if (!key || seenTaskKeys.has(key)) return false;
+      seenTaskKeys.add(key);
+      return true;
+    });
+
+    const existing = state.allTasks;
+    state.allTasks = [...existing, ...newTasks];
+
+    // Show results as soon as first tasks arrive, or when all batches finish
+    if (!resultsShown && (newTasks.length > 0 || done)) {
+      resultsShown = true;
+      stopLoading();
+      showScreen('screen-results');
+    }
+
+    if (resultsShown) renderResults();
+
+    if (done) {
+      socket.off('pending_tasks');
+      socket.off('tasks_batch');
+      socket.off('analyze_error');
+    }
+  });
+
+  socket.on('analyze_error', ({ message }) => {
+    stopLoading();
+    showScreen('screen-setup');
+    showToast('❌ Error: ' + message);
+    socket.off('pending_tasks');
+    socket.off('tasks_batch');
+    socket.off('analyze_error');
+  });
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatIds, userName, userDesignation })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      stopLoading();
+      showScreen('screen-setup');
+      showToast('❌ Error: ' + (data.error || 'Server error'));
+      socket.off('pending_tasks');
+      socket.off('tasks_batch');
+      socket.off('analyze_error');
+    }
+  } catch (err) {
+    stopLoading();
+    showScreen('screen-setup');
+    showToast('❌ Error: ' + err.message);
+    socket.off('pending_tasks');
+    socket.off('tasks_batch');
+    socket.off('analyze_error');
+  }
+}
+
+document.getElementById('btnAnalyze').addEventListener('click', () => {
+  const userName = document.getElementById('userName').value.trim();
+  const userDesignation = document.getElementById('userDesignation').value.trim();
+  // Remember name and designation for next time
+  localStorage.setItem('wa_userName', userName);
+  localStorage.setItem('wa_designation', userDesignation);
+  const chatIds = [...document.querySelectorAll('.chat-checkbox:checked')].map(cb => cb.dataset.id);
+  doAnalyze(chatIds, userName, userDesignation);
+});
+
+document.getElementById('btnFullRescan').addEventListener('click', async () => {
+  try {
+    await fetch('/api/reset-scan', { method: 'DELETE' });
+  } catch {}
+  doAnalyze(state.lastChatIds, state.currentUserName, state.currentUserDesignation);
+});
+
+// ══════════════════════════════════════════════
+//   RESULTS
+// ══════════════════════════════════════════════
+function sortTasks(tasks) {
+  const prioOrder  = { urgent: 0, normal: 1, someday: 2 };
+  const matchOrder = { tagged: 0, named: 1, role: 2 };
+  return [...tasks].sort((a, b) => {
+    // 1. Group chats first
+    const aGroup = a.isGroup ? 0 : 1;
+    const bGroup = b.isGroup ? 0 : 1;
+    if (aGroup !== bGroup) return aGroup - bGroup;
+    // 2. Tagged (@mention) before named/role
+    const aMatch = matchOrder[a.matchType] ?? 1;
+    const bMatch = matchOrder[b.matchType] ?? 1;
+    if (aMatch !== bMatch) return aMatch - bMatch;
+    // 3. Priority
+    return (prioOrder[a.priority] ?? 1) - (prioOrder[b.priority] ?? 1);
+  });
+}
+
+function renderResults() {
+  const tasks = state.allTasks;
+  const done = state.doneTasks;
+
+  const active = tasks.filter(t => !done.has(t._uid));
+  const taggedTasks  = active.filter(t => t.matchType === 'tagged');
+  const namedTasks   = active.filter(t => t.matchType === 'named' || !t.matchType);
+  const roleTasks    = active.filter(t => t.matchType === 'role');
+  const urgentTasks  = active.filter(t => t.priority === 'urgent');
+  const doneTasks    = tasks.filter(t => done.has(t._uid));
+
+  document.getElementById('statUrgent').textContent  = `${urgentTasks.length} Urgent`;
+  document.getElementById('statNormal').textContent  = `${active.filter(t=>t.priority==='normal').length} Normal`;
+  document.getElementById('statSomeday').textContent = `${active.filter(t=>t.priority==='someday').length} Someday`;
+  document.getElementById('statTotal').textContent   = `Total: ${tasks.length}`;
+
+  // Streaming banner + scannedInfo
+  const banner = document.getElementById('batchBanner');
+  const bannerText = document.getElementById('batchBannerText');
+  document.getElementById('btnFullRescan').style.display = 'none';
+
+  const scanLabel = state.isIncremental
+    ? `new messages since ${state.lastScanTime ? timeSince(state.lastScanTime) : 'last scan'}`
+    : 'last 3 days · read + unread';
+
+  if (state.isStreaming) {
+    banner.style.display = '';
+    bannerText.textContent = `${state.batchesComplete}/${state.totalBatches} chats analyzed — tasks appear as each chat finishes…`;
+    document.getElementById('scannedInfo').textContent =
+      `${state.totalMessages} messages (${scanLabel}) scanned across ${state.totalChats} chats…`;
+  } else {
+    banner.style.display = 'none';
+    document.getElementById('scannedInfo').textContent =
+      `${state.totalChats} chats · ${state.totalMessages} messages (${scanLabel}) scanned`;
+  }
+
+  document.getElementById('tabAll').textContent     = active.length;
+  document.getElementById('tabTagged').textContent  = taggedTasks.length;
+  document.getElementById('tabNamed').textContent   = namedTasks.length;
+  document.getElementById('tabRole').textContent    = roleTasks.length;
+  document.getElementById('tabUrgent').textContent  = urgentTasks.length;
+  document.getElementById('tabDone').textContent    = doneTasks.length;
+
+  const search = state.searchQuery.toLowerCase();
+
+  let filtered;
+  if      (state.currentFilter === 'all')    filtered = active;
+  else if (state.currentFilter === 'done')   filtered = doneTasks;
+  else if (state.currentFilter === 'tagged') filtered = taggedTasks;
+  else if (state.currentFilter === 'named')  filtered = namedTasks;
+  else if (state.currentFilter === 'role')   filtered = roleTasks;
+  else if (state.currentFilter === 'urgent') filtered = urgentTasks;
+  else filtered = active;
+
+  if (search) {
+    filtered = filtered.filter(t =>
+      (t.task || '').toLowerCase().includes(search) ||
+      (t.assignedBy || '').toLowerCase().includes(search) ||
+      (t.chatName || '').toLowerCase().includes(search) ||
+      (t.originalMessage || '').toLowerCase().includes(search)
+    );
+  }
+
+  filtered = sortTasks(filtered);
+
+  const list = document.getElementById('tasksList');
+  list.innerHTML = '';
+
+  if (!filtered.length) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-emoji">🎉</div>
+        <h3 class="empty-title">${tasks.length === 0 ? `No tasks found for ${escHtml(state.currentUserName)}` : 'Nothing here!'}</h3>
+        <p class="empty-sub">${tasks.length === 0
+          ? "Either you're very organized or nobody trusts you with tasks 😄"
+          : "Try a different filter or search term."}</p>
+      </div>`;
+    return;
+  }
+
+  filtered.forEach((task, i) => {
+    const card = buildTaskCard(task, i);
+    list.appendChild(card);
+  });
+
+  checkAllDone();
+}
+
+const matchLabels = { tagged: '🏷️ Tagged', named: '👤 Named', role: '💼 Role' };
+
+function buildTaskCard(task, idx) {
+  const uid = task._uid;
+  const isDone = state.doneTasks.has(uid);
+  const prio = task.priority || 'normal';
+  const matchType = task.matchType || 'named';
+  const color = avatarColor(task.assignedBy);
+  const initials = (task.assignedBy || '?').charAt(0).toUpperCase();
+  const matchGlowClass = `match-${matchType}`;
+  const matchLabel = matchLabels[matchType] || '👤 Named';
+
+  const card = document.createElement('div');
+  card.className = 'task-card';
+  card.dataset.uid = uid;
+  card.style.animation = `slideUp 0.35s ease ${idx * 50}ms both`;
+
+  card.innerHTML = `
+    <div class="task-card-inner">
+      <div class="task-card-front ${prio} ${matchGlowClass}">
+        <div class="card-top">
+          <span class="priority-badge ${prio}">${prio}</span>
+          <span class="match-badge ${matchType}">${matchLabel}</span>
+          <span style="font-size:12px;padding:3px 8px;border-radius:6px;font-weight:600;${task.isGroup ? 'background:rgba(37,211,102,0.1);color:var(--green)' : 'background:rgba(173,186,199,0.1);color:var(--muted)'}">${task.isGroup ? '👥 Group' : '💬 DM'}</span>
+          ${task.fromPrevious ? `<span class="badge badge-carried">📋 Pending</span>` : ''}
+          <span class="chat-name-tag">${escHtml(task.chatName || '')}</span>
+          <span class="card-date">${escHtml(task.date || '')}</span>
+        </div>
+        <div class="card-assignee">
+          <div class="avatar" style="background:${color}">${initials}</div>
+          <span class="assignee-name">Assigned by <strong>${escHtml(task.assignedBy || 'Unknown')}</strong></span>
+        </div>
+        <p class="card-task">${escHtml(task.task || '')}</p>
+        <p class="card-original">${escHtml((task.originalMessage || '').slice(0, 120))}</p>
+        ${isDone
+          ? `<button class="btn-done" disabled>✅ Done</button>`
+          : `<button class="btn-done" data-uid="${uid}">✅ Mark as Done</button>`}
+      </div>
+      <div class="task-card-back">
+        <span class="done-icon">✅</span>
+      </div>
+    </div>`;
+
+  // Add slide-up keyframe if not already added
+  if (!document.getElementById('slideUpKF')) {
+    const style = document.createElement('style');
+    style.id = 'slideUpKF';
+    style.textContent = `@keyframes slideUp { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }`;
+    document.head.appendChild(style);
+  }
+
+  if (!isDone) {
+    card.querySelector('.btn-done').addEventListener('click', () => markDone(task, card));
+  }
+
+  return card;
+}
+
+async function markDone(task, cardEl) {
+  const btn = cardEl.querySelector('.btn-done');
+  btn.disabled = true;
+  btn.innerHTML = `<span class="btn-spinner"></span> Sending…`;
+
+  try {
+    const res = await fetch('/api/done', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatId: task.chatId,
+        taskText: task.task,
+        assignedBy: task.assignedBy,
+        messageId: task.messageId,
+        taskUid: task._uid
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    // Flip card
+    cardEl.classList.add('flipped');
+    state.doneTasks.add(task._uid);
+
+    // Collapse after flip
+    setTimeout(() => {
+      cardEl.style.overflow = 'hidden';
+      cardEl.style.transition = 'max-height 0.4s ease, margin 0.4s ease, opacity 0.3s';
+      cardEl.style.maxHeight = cardEl.offsetHeight + 'px';
+      requestAnimationFrame(() => {
+        cardEl.style.maxHeight = '0';
+        cardEl.style.marginBottom = '0';
+        cardEl.style.opacity = '0';
+      });
+    }, 700);
+
+    showToast(`✅ Replied in ${task.chatName || 'chat'}!`);
+
+    // Re-render stats after animation
+    setTimeout(() => renderResults(), 1200);
+
+  } catch (err) {
+    btn.disabled = false;
+    btn.innerHTML = '✅ Mark as Done';
+    showToast('❌ Failed to send: ' + err.message);
+  }
+}
+
+function checkAllDone() {
+  const active = state.allTasks.filter(t => !state.doneTasks.has(t._uid));
+  if (state.allTasks.length > 0 && active.length === 0) {
+    setTimeout(showCelebration, 600);
+  }
+}
+
+// ══════════════════════════════════════════════
+//   FILTER TABS
+// ══════════════════════════════════════════════
+document.getElementById('filterTabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  state.currentFilter = tab.dataset.filter;
+  renderResults();
+});
+
+document.getElementById('searchInput').addEventListener('input', e => {
+  state.searchQuery = e.target.value;
+  renderResults();
+});
+
+document.getElementById('btnBack').addEventListener('click', () => {
+  showScreen('screen-setup');
+});
+
+// ══════════════════════════════════════════════
+//   TOAST
+// ══════════════════════════════════════════════
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+// ══════════════════════════════════════════════
+//   CELEBRATION
+// ══════════════════════════════════════════════
+function showCelebration() {
+  const overlay = document.getElementById('celebration');
+  const rain = document.getElementById('celebRain');
+  rain.innerHTML = '';
+
+  const emojis = ['🎉','🎊','✅','🏆','🌟','💪','🥳','🎈'];
+  for (let i = 0; i < 24; i++) {
+    const el = document.createElement('span');
+    el.className = 'emoji-drop';
+    el.textContent = emojis[i % emojis.length];
+    el.style.left = (Math.random() * 100) + 'vw';
+    el.style.animationDuration = (2 + Math.random() * 3) + 's';
+    el.style.animationDelay = (Math.random() * 2) + 's';
+    rain.appendChild(el);
+  }
+  overlay.classList.add('show');
+}
+
+document.getElementById('btnCelebClose').addEventListener('click', () => {
+  document.getElementById('celebration').classList.remove('show');
+  state.allTasks = [];
+  state.doneTasks = new Set();
+  showScreen('screen-setup');
+});
+
+// ══════════════════════════════════════════════
+//   UTILS
+// ══════════════════════════════════════════════
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+
+function timeSince(ms) {
+  const diff = Date.now() - ms;
+  const m = Math.floor(diff / 60000);
+  if (m < 1)  return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// Assign UIDs to tasks for tracking — never overwrite an existing UID
+function assignUIDs(tasks) {
+  tasks.forEach((t, i) => {
+    if (!t._uid) t._uid = t.messageId || `task-${i}-${Date.now()}`;
+  });
+}
+
+// Patch the analyze response handler to assign UIDs
+const origRenderResults = renderResults;
+// (UIDs assigned at data load time — see fetch handler above)
+
+// Override to ensure UIDs assigned after each fetch
+const origFetch = window.fetch;
+window.fetch = async function(...args) {
+  const res = await origFetch(...args);
+  return res;
+};
+
+// Ensure UIDs on allTasks whenever set
+Object.defineProperty(state, 'allTasks', {
+  get() { return this._allTasks || []; },
+  set(v) {
+    this._allTasks = v;
+    assignUIDs(v);
+  }
+});
+</script>
+</body>
+</html>
