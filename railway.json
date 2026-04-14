@@ -1,7 +1,6 @@
 {
-  "build": { "builder": "NIXPACKS" },
+  "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
   "deploy": {
-    "startCommand": "node server.js",
     "restartPolicyType": "ON_FAILURE"
   }
 }
