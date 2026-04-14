@@ -66,7 +66,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 if (!process.env.GROQ_API_KEY) console.error('⚠️  GROQ_API_KEY is not set — AI analysis will fail!');
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 
 // ─── WhatsApp Client ───────────────────────────────────────────────────────
 const client = new Client({
@@ -231,6 +231,7 @@ let _groqLastCall = 0;
 const GROQ_MIN_GAP_MS = 2500;
 
 async function callGroq(prompt, retries = 4) {
+  if (!groq) throw new Error('GROQ_API_KEY is not set');
   for (let attempt = 0; attempt < retries; attempt++) {
     // Throttle: wait until at least GROQ_MIN_GAP_MS since the last call
     const gap = Date.now() - _groqLastCall;
