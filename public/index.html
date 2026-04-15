@@ -536,7 +536,10 @@ img    { display: block; }
 <!-- ══ SCREEN 2: SETUP ══ -->
 <section id="screen-setup" class="screen">
   <div class="setup-header">
-    <div class="setup-connected">WhatsApp Connected</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+      <div class="setup-connected">WhatsApp Connected</div>
+      <button id="btnLogout" style="margin-left:auto;background:rgba(248,81,73,0.1);color:var(--urgent);border:1px solid rgba(248,81,73,0.3);border-radius:20px;padding:6px 16px;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;" onmouseover="this.style.background='rgba(248,81,73,0.2)'" onmouseout="this.style.background='rgba(248,81,73,0.1)'">⟳ Switch Account</button>
+    </div>
     <h1>Find Your Tasks</h1>
     <p>Enter your name and choose which chats to scan &nbsp;·&nbsp; <span style="color:var(--green);font-weight:600;">Last 3 days · read + unread</span></p>
     <p id="lastScanInfo" style="display:none;margin-top:6px;font-size:13px;color:var(--green);font-weight:500;"></p>
@@ -641,6 +644,28 @@ img    { display: block; }
 
 <script>
 // ══════════════════════════════════════════════
+//   SESSION ID
+// ══════════════════════════════════════════════
+const sessionId = (() => {
+  let id = localStorage.getItem('wa_sessionId');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('wa_sessionId', id);
+  }
+  return id;
+})();
+
+// Quick status check — update message if already authenticated
+fetch(`/api/status?sessionId=${encodeURIComponent(sessionId)}`)
+  .then(r => r.json())
+  .then(({ status }) => {
+    if (status === 'authenticated') {
+      document.getElementById('qrStatus').textContent = 'Restoring your WhatsApp session…';
+    }
+  })
+  .catch(() => {});
+
+// ══════════════════════════════════════════════
 //   STATE
 // ══════════════════════════════════════════════
 const state = {
@@ -671,7 +696,7 @@ function showScreen(id) {
 // ══════════════════════════════════════════════
 //   SOCKET.IO
 // ══════════════════════════════════════════════
-const socket = io();
+const socket = io({ query: { sessionId } });
 
 socket.on('connect', () => {
   document.getElementById('qrStatus').textContent = 'Connected — checking WhatsApp session…';
@@ -740,7 +765,7 @@ socket.on('ready', async () => {
 
   // Show last scan info on setup screen
   try {
-    const s = await fetch('/api/scan-status').then(r => r.json());
+    const s = await fetch(`/api/scan-status?sessionId=${encodeURIComponent(sessionId)}`).then(r => r.json());
     state.lastScanTime = s.lastScanTime;
     const lastScanEl = document.getElementById('lastScanInfo');
     if (lastScanEl && s.lastScanTime) {
@@ -789,7 +814,7 @@ async function loadChats() {
   const list = document.getElementById('chatsList');
   list.innerHTML = '<div class="chats-loading">Loading chats…</div>';
   try {
-    const res = await fetch('/api/chats');
+    const res = await fetch(`/api/chats?sessionId=${encodeURIComponent(sessionId)}`);
     const chats = await res.json();
     if (!chats.length) {
       list.innerHTML = '<div class="chats-loading">No chats found.</div>';
@@ -986,7 +1011,7 @@ async function doAnalyze(chatIds, userName, userDesignation) {
     const res = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatIds, userName, userDesignation })
+      body: JSON.stringify({ sessionId, chatIds, userName, userDesignation })
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1019,7 +1044,7 @@ document.getElementById('btnAnalyze').addEventListener('click', () => {
 
 document.getElementById('btnFullRescan').addEventListener('click', async () => {
   try {
-    await fetch('/api/reset-scan', { method: 'DELETE' });
+    await fetch(`/api/reset-scan?sessionId=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
   } catch {}
   doAnalyze(state.lastChatIds, state.currentUserName, state.currentUserDesignation);
 });
@@ -1200,6 +1225,7 @@ async function markDone(task, cardEl) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        sessionId,
         chatId: task.chatId,
         taskText: task.task,
         assignedBy: task.assignedBy,
@@ -1304,6 +1330,20 @@ document.getElementById('btnCelebClose').addEventListener('click', () => {
   state.allTasks = [];
   state.doneTasks = new Set();
   showScreen('screen-setup');
+});
+
+// ── Logout / Switch Account ───────────────────────────────────────────────
+document.getElementById('btnLogout').addEventListener('click', async () => {
+  if (!confirm('Disconnect WhatsApp and switch account?')) return;
+  try {
+    await fetch('/api/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId })
+    });
+  } catch {}
+  localStorage.removeItem('wa_sessionId');
+  location.reload();
 });
 
 // ══════════════════════════════════════════════

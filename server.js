@@ -9,57 +9,56 @@ const Groq = require('groq-sdk');
 const path = require('path');
 const fs = require('fs');
 
-const SCAN_FILE = path.join(__dirname, 'last-scan.json');
+// ─── Per-session scan file helpers ────────────────────────────────────────────
+function getScanFile(sessionId) {
+  return path.join(__dirname, `last-scan-${sessionId}.json`);
+}
 
-function readLastScan() {
+function readLastScan(sessionId) {
   try {
-    if (fs.existsSync(SCAN_FILE)) {
-      return JSON.parse(fs.readFileSync(SCAN_FILE, 'utf8'));
-    }
+    const file = getScanFile(sessionId);
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {}
   return null;
 }
 
-function writeLastScan(data) {
+function writeLastScan(sessionId, data) {
   try {
-    fs.writeFileSync(SCAN_FILE, JSON.stringify(data), 'utf8');
+    fs.writeFileSync(getScanFile(sessionId), JSON.stringify(data), 'utf8');
   } catch (err) {
-    console.error('Failed to write last-scan.json:', err);
+    console.error('Failed to write scan file:', err);
   }
 }
 
-function readPendingTasks() {
+function readPendingTasks(sessionId) {
   try {
-    const data = readLastScan();
+    const data = readLastScan(sessionId);
     return Array.isArray(data?.pendingTasks) ? data.pendingTasks : [];
   } catch { return []; }
 }
 
-function writePendingTasks(tasks) {
-  const data = readLastScan() || {};
+function writePendingTasks(sessionId, tasks) {
+  const data = readLastScan(sessionId) || {};
   data.pendingTasks = tasks;
-  writeLastScan(data);
+  writeLastScan(sessionId, data);
 }
 
-// Track IDs of tasks the user marked as Done — never re-surface them
-function readDoneIds() {
+function readDoneIds(sessionId) {
   try {
-    const data = readLastScan();
+    const data = readLastScan(sessionId);
     return new Set(Array.isArray(data?.doneIds) ? data.doneIds : []);
   } catch { return new Set(); }
 }
 
-function writeDoneIds(ids) {
-  const data = readLastScan() || {};
+function writeDoneIds(sessionId, ids) {
+  const data = readLastScan(sessionId) || {};
   data.doneIds = [...ids];
-  writeLastScan(data);
+  writeLastScan(sessionId, data);
 }
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*' }
-});
+const io = new Server(server, { cors: { origin: '*' } });
 
 app.use(cors());
 app.use(express.json());
@@ -68,80 +67,161 @@ app.use(express.static(path.join(__dirname, 'public')));
 if (!process.env.GROQ_API_KEY) console.error('⚠️  GROQ_API_KEY is not set — AI analysis will fail!');
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 
-// ─── WhatsApp Client ───────────────────────────────────────────────────────
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
-  puppeteer: {
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    headless: true
+// ─── Session Management ────────────────────────────────────────────────────
+// sessions: Map<sessionId, { client, isReady, lastQrImage, myWhatsAppNumber, contactCache, cleanupTimer }>
+const sessions = new Map();
+
+function getOrCreateSession(sessionId) {
+  if (!sessions.has(sessionId)) {
+    sessions.set(sessionId, {
+      client: null,
+      isReady: false,
+      lastQrImage: null,
+      myWhatsAppNumber: null,
+      contactCache: new Map(),
+      cleanupTimer: null
+    });
   }
-});
+  return sessions.get(sessionId);
+}
 
-let isReady = false;
-let lastQrImage = null;
-let myWhatsAppNumber = null;
+function initClient(sessionId) {
+  const session = getOrCreateSession(sessionId);
+  if (session.client) return session; // already initialized
 
-client.on('qr', async (qr) => {
-  try {
-    const qrImage = await qrcode.toDataURL(qr);
-    lastQrImage = qrImage;
-    io.emit('qr', { image: qrImage });
-    io.emit('loading', { message: 'Scan the QR code with your WhatsApp' });
-    console.log('QR code generated');
-  } catch (err) {
-    console.error('QR generation error:', err);
-  }
-});
+  const client = new Client({
+    authStrategy: new LocalAuth({
+      clientId: sessionId,
+      dataPath: path.join(__dirname, '.wwebjs_auth')
+    }),
+    puppeteer: {
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      headless: true
+    }
+  });
 
-client.on('loading_screen', (percent, message) => {
-  io.emit('loading', { message: `Loading: ${message} (${percent}%)` });
-});
+  session.client = client;
 
-client.on('authenticated', () => {
-  io.emit('loading', { message: 'Authenticated! Finishing setup...' });
-  console.log('Authenticated');
-});
+  client.on('qr', async (qr) => {
+    try {
+      const qrImage = await qrcode.toDataURL(qr);
+      session.lastQrImage = qrImage;
+      io.to(sessionId).emit('qr', { image: qrImage });
+      io.to(sessionId).emit('loading', { message: 'Scan the QR code with your WhatsApp' });
+      console.log(`[${sessionId.slice(0, 8)}] QR code generated`);
+    } catch (err) {
+      console.error('QR generation error:', err);
+    }
+  });
 
-client.on('auth_failure', (msg) => {
-  io.emit('auth_failure', { message: msg });
-  console.error('Auth failure:', msg);
-});
+  client.on('loading_screen', (percent, message) => {
+    io.to(sessionId).emit('loading', { message: `Loading: ${message} (${percent}%)` });
+  });
 
-client.on('ready', () => {
-  isReady = true;
-  try { myWhatsAppNumber = client.info.wid._serialized.split('@')[0]; } catch {}
-  io.emit('ready', { status: 'connected' });
-  console.log('WhatsApp client ready, account number:', myWhatsAppNumber);
-});
+  client.on('authenticated', () => {
+    io.to(sessionId).emit('loading', { message: 'Authenticated! Finishing setup...' });
+    console.log(`[${sessionId.slice(0, 8)}] Authenticated`);
+  });
 
-client.on('disconnected', (reason) => {
-  isReady = false;
-  io.emit('disconnected', { reason });
-  console.log('Disconnected:', reason);
-});
+  client.on('auth_failure', (msg) => {
+    io.to(sessionId).emit('auth_failure', { message: msg });
+    console.error(`[${sessionId.slice(0, 8)}] Auth failure:`, msg);
+  });
 
+  client.on('ready', () => {
+    session.isReady = true;
+    try { session.myWhatsAppNumber = client.info.wid._serialized.split('@')[0]; } catch {}
+    if (session.cleanupTimer) {
+      clearTimeout(session.cleanupTimer);
+      session.cleanupTimer = null;
+    }
+    io.to(sessionId).emit('ready', { status: 'connected' });
+    console.log(`[${sessionId.slice(0, 8)}] Ready, number:`, session.myWhatsAppNumber);
+  });
+
+  client.on('disconnected', (reason) => {
+    session.isReady = false;
+    io.to(sessionId).emit('disconnected', { reason });
+    console.log(`[${sessionId.slice(0, 8)}] Disconnected:`, reason);
+  });
+
+  io.to(sessionId).emit('loading', { message: 'Initializing WhatsApp...' });
+  client.initialize().catch(err => {
+    console.error(`[${sessionId.slice(0, 8)}] Init error:`, err);
+    io.to(sessionId).emit('loading', { message: 'Initialization failed. Please restart.' });
+  });
+
+  return session;
+}
+
+// ─── Socket.IO ─────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  console.log('Browser connected via socket');
-  if (isReady) {
-    socket.emit('ready', { status: 'connected' });
-  } else if (lastQrImage) {
-    socket.emit('qr', { image: lastQrImage });
-    socket.emit('loading', { message: 'Scan the QR code with your WhatsApp' });
-  } else {
-    socket.emit('loading', { message: 'Initializing WhatsApp...' });
+  const sessionId = socket.handshake.query.sessionId;
+  if (!sessionId) {
+    socket.emit('loading', { message: 'Error: missing session ID. Please refresh.' });
+    return;
   }
-});
 
-io.emit('loading', { message: 'Initializing WhatsApp...' });
-client.initialize().catch(err => {
-  console.error('Client initialization error:', err);
-  io.emit('loading', { message: 'Initialization failed. Please restart.' });
+  socket.join(sessionId);
+  console.log(`Browser connected: session=${sessionId.slice(0, 8)}`);
+
+  const session = sessions.get(sessionId);
+
+  // Cancel any pending cleanup — user reconnected
+  if (session?.cleanupTimer) {
+    clearTimeout(session.cleanupTimer);
+    session.cleanupTimer = null;
+  }
+
+  if (session?.isReady) {
+    socket.emit('ready', { status: 'connected' });
+  } else if (session?.lastQrImage) {
+    socket.emit('qr', { image: session.lastQrImage });
+    socket.emit('loading', { message: 'Scan the QR code with your WhatsApp' });
+  } else if (session?.client) {
+    // Client initializing — events will arrive via the room
+    socket.emit('loading', { message: 'Initializing WhatsApp...' });
+  } else {
+    // No session yet — create and initialize
+    initClient(sessionId);
+  }
+
+  socket.on('disconnect', () => {
+    console.log(`Browser disconnected: session=${sessionId.slice(0, 8)}`);
+    const s = sessions.get(sessionId);
+    if (s && !s.isReady && s.client) {
+      // Destroy unauthenticated client after 5 min if no sockets reconnect
+      s.cleanupTimer = setTimeout(async () => {
+        const roomSockets = await io.in(sessionId).fetchSockets();
+        if (roomSockets.length === 0) {
+          const still = sessions.get(sessionId);
+          if (still && !still.isReady) {
+            console.log(`Cleaning up unauthenticated session ${sessionId.slice(0, 8)}`);
+            try { await still.client.destroy(); } catch {}
+            sessions.delete(sessionId);
+          }
+        }
+      }, 5 * 60 * 1000);
+    }
+  });
 });
 
 // ─── API Routes ────────────────────────────────────────────────────────────
 
+// GET /api/status?sessionId=xxx — check if session is already authenticated
+app.get('/api/status', (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const session = sessions.get(sessionId);
+  if (!session) return res.json({ status: 'new' });
+  if (session.isReady) return res.json({ status: 'authenticated' });
+  return res.json({ status: 'disconnected' });
+});
+
 app.get('/api/scan-status', (req, res) => {
-  const lastScan = readLastScan();
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const lastScan = readLastScan(sessionId);
   res.json({
     isFirstScan: !lastScan || !lastScan.lastScanTime,
     lastScanTime: lastScan ? lastScan.lastScanTime : null,
@@ -150,8 +230,11 @@ app.get('/api/scan-status', (req, res) => {
 });
 
 app.delete('/api/reset-scan', (req, res) => {
+  const sessionId = req.query.sessionId || req.body?.sessionId;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
   try {
-    if (fs.existsSync(SCAN_FILE)) fs.unlinkSync(SCAN_FILE);
+    const file = getScanFile(sessionId);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -159,9 +242,12 @@ app.delete('/api/reset-scan', (req, res) => {
 });
 
 app.get('/api/chats', async (req, res) => {
-  if (!isReady) return res.status(503).json({ error: 'WhatsApp not ready' });
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const session = sessions.get(sessionId);
+  if (!session || !session.isReady) return res.status(503).json({ error: 'WhatsApp not ready' });
   try {
-    const chats = await client.getChats();
+    const chats = await session.client.getChats();
     const result = chats
       .sort((a, b) => {
         const ta = a.lastMessage ? a.lastMessage.timestamp : 0;
@@ -177,6 +263,65 @@ app.get('/api/chats', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Get chats error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/logout — destroy client and clear session
+app.post('/api/logout', async (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const session = sessions.get(sessionId);
+  if (session?.client) {
+    try { await session.client.logout(); } catch {}
+    try { await session.client.destroy(); } catch {}
+  }
+  sessions.delete(sessionId);
+  res.json({ success: true });
+});
+
+// POST /api/analyze — starts batched scan, streams results via socket events
+app.post('/api/analyze', (req, res) => {
+  const { sessionId, chatIds = [], userName = '', userDesignation = '' } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const session = sessions.get(sessionId);
+  if (!session || !session.isReady) return res.status(503).json({ error: 'WhatsApp not ready' });
+  if (!userName.trim()) return res.status(400).json({ error: 'userName is required' });
+  if (!chatIds.length)  return res.status(400).json({ error: 'No chats selected' });
+
+  res.json({ started: true, totalChats: chatIds.length });
+  processChatsBatched(sessionId, chatIds, userName, userDesignation).catch(err => {
+    console.error('Analyze error:', err);
+    io.to(sessionId).emit('analyze_error', { message: err.message });
+  });
+});
+
+// POST /api/done — remove task from pending store
+app.post('/api/done', async (req, res) => {
+  const { sessionId, chatId, taskText, assignedBy, messageId, taskUid } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const session = sessions.get(sessionId);
+  if (!session || !session.isReady) return res.status(503).json({ error: 'WhatsApp not ready' });
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+
+  try {
+    const pending = readPendingTasks(sessionId);
+    const updated = pending.filter(t => {
+      if (messageId && t.messageId === messageId) return false;
+      if (taskUid && t._uid === taskUid) return false;
+      return true;
+    });
+    if (updated.length !== pending.length) writePendingTasks(sessionId, updated);
+
+    if (messageId) {
+      const doneIds = readDoneIds(sessionId);
+      doneIds.add(messageId);
+      writeDoneIds(sessionId, doneIds);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Done error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -215,12 +360,10 @@ MESSAGES TO ANALYZE:
 ${chunkText}`;
 }
 
-const contactCache = new Map();
-
-async function resolveContactName(author, fallback) {
-  if (contactCache.has(author)) return contactCache.get(author);
-  const name = (await client.getContactById(author).catch(() => null))?.pushname || fallback;
-  contactCache.set(author, name);
+async function resolveContactName(session, author, fallback) {
+  if (session.contactCache.has(author)) return session.contactCache.get(author);
+  const name = (await session.client.getContactById(author).catch(() => null))?.pushname || fallback;
+  session.contactCache.set(author, name);
   return name;
 }
 
@@ -233,7 +376,6 @@ const GROQ_MIN_GAP_MS = 2500;
 async function callGroq(prompt, retries = 4) {
   if (!groq) throw new Error('GROQ_API_KEY is not set');
   for (let attempt = 0; attempt < retries; attempt++) {
-    // Throttle: wait until at least GROQ_MIN_GAP_MS since the last call
     const gap = Date.now() - _groqLastCall;
     if (gap < GROQ_MIN_GAP_MS) {
       await new Promise(r => setTimeout(r, GROQ_MIN_GAP_MS - gap));
@@ -289,45 +431,40 @@ async function parallel(arr, lanes, fn) {
   );
 }
 
-async function processChatsBatched(chatIds, userName, userDesignation) {
+async function processChatsBatched(sessionId, chatIds, userName, userDesignation) {
+  const session = sessions.get(sessionId);
+  if (!session || !session.isReady) throw new Error('Session not ready');
+
   // Pipeline 1: fetch messages — MUST be 1 (sequential).
-  //   whatsapp-web.js controls a real headless Chrome browser. fetchMessages()
-  //   navigates the browser to each chat to load messages. Running more than
-  //   one fetch at a time corrupts the page state → "waitForChatLoading" crash.
   // Pipeline 2: AI analysis — 2 Groq lanes (global rate-limiter keeps them safe)
-  const FETCH_LANES    = 1;
-  const GROQ_LANES     = 2;
-  const totalChats     = chatIds.length;
-  let   totalMessages  = 0;
+  const FETCH_LANES   = 1;
+  const GROQ_LANES    = 2;
+  const totalChats    = chatIds.length;
+  let   totalMessages = 0;
 
   // ── Time window ──────────────────────────────────────────────────────────
-  // Always cover exactly 3 days regardless of scan history.
-  // For incremental scans: only new messages since the last completed scan
-  // (but never older than 3 days).
-  const THREE_DAYS_AGO   = Math.floor(Date.now() / 1000) - 3 * 24 * 60 * 60;
-  const lastScan         = readLastScan();
-  const lastScanTimeSec  = lastScan?.lastScanTime
+  const THREE_DAYS_AGO  = Math.floor(Date.now() / 1000) - 3 * 24 * 60 * 60;
+  const lastScan        = readLastScan(sessionId);
+  const lastScanTimeSec = lastScan?.lastScanTime
     ? Math.floor(lastScan.lastScanTime / 1000)
     : 0;
-  // Incremental: fetch only messages after the last scan (still within 3 days)
   const messageCutoff   = Math.max(lastScanTimeSec, THREE_DAYS_AGO);
   const isIncremental   = lastScanTimeSec > THREE_DAYS_AGO;
 
   // ── Done IDs — never re-surface tasks the user already marked done ────────
-  const doneIds = readDoneIds();
+  const doneIds = readDoneIds(sessionId);
 
   console.log(
-    `\n=== SCAN START: ${totalChats} chats, user="${userName}", role="${userDesignation}"`,
+    `\n=== [${sessionId.slice(0, 8)}] SCAN START: ${totalChats} chats, user="${userName}", role="${userDesignation}"`,
     `| mode=${isIncremental ? 'INCREMENTAL (since ' + new Date(messageCutoff * 1000).toLocaleString() + ')' : 'FULL 3-DAY'} ===`
   );
 
   // ── Previous tasks: emit immediately so UI loads them right away ──────────
-  const oldPending = readPendingTasks();
+  const oldPending = readPendingTasks(sessionId);
   if (oldPending.length > 0) {
-    // Filter out tasks the user already marked done
     const visiblePrev = oldPending.filter(t => !t.messageId || !doneIds.has(t.messageId));
     if (visiblePrev.length > 0) {
-      io.emit('pending_tasks', { tasks: visiblePrev.map(t => ({ ...t, fromPrevious: true })) });
+      io.to(sessionId).emit('pending_tasks', { tasks: visiblePrev.map(t => ({ ...t, fromPrevious: true })) });
     }
   }
 
@@ -335,39 +472,28 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
   const seenIds       = new Set();
   const seenPrefixes  = new Set();
 
-  io.emit('loading', { message: `Reading messages from ${totalChats} chats…` });
-  io.emit('scan_mode', {
+  io.to(sessionId).emit('loading', { message: `Reading messages from ${totalChats} chats…` });
+  io.to(sessionId).emit('scan_mode', {
     isIncremental,
     messageCutoff: messageCutoff * 1000,
     lastScanTime: lastScan?.lastScanTime || null
   });
 
   // ══ PIPELINE 1 — read messages directly from WhatsApp Web's in-memory store ══
-  //
-  // chat.fetchMessages() is broken: it navigates the headless browser to each
-  // chat to scroll-load older messages, which triggers an internal WA function
-  // 'waitForChatLoading' that crashes when called on chats not currently open.
-  //
-  // Fix: use client.pupPage.evaluate() to read directly from window.Store.Chat
-  // — the same JavaScript object WhatsApp Web keeps in memory for all chats.
-  // No navigation, no waitForChatLoading, no crashes. Works for all messages
-  // that WhatsApp Web has already loaded (last ~3 days for active chats).
   const chatDataList = [];
   let fetchedCount   = 0;
 
   // First collect all chat metadata (name, isGroup) without fetching messages
   const chatMeta = {};
-  const allChats = await client.getChats().catch(() => []);
+  const allChats = await session.client.getChats().catch(() => []);
   for (const c of allChats) {
     chatMeta[c.id._serialized] = { name: c.name || c.id.user, isGroup: c.isGroup };
   }
 
   // Read ALL selected chats' messages from the in-memory store in ONE evaluate call.
-  // The mention check (isMentioned) is done INSIDE evaluate so myWhatsAppNumber
-  // is resolved in the same context as the WA store — avoids the serialization gap.
   let storeResults = {};
   try {
-    storeResults = await client.pupPage.evaluate((chatIds, cutoff, myNum) => {
+    storeResults = await session.client.pupPage.evaluate((chatIds, cutoff, myNum) => {
       const out = {};
       for (const chatId of chatIds) {
         try {
@@ -382,13 +508,12 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
               const jids = (m.mentionedJidList || []).map(j =>
                 typeof j === 'string' ? j : (j._serialized || '')
               );
-              // Resolve mention inside the browser context where myNum is accurate
               const isMentioned = !!myNum && jids.some(j => j.split('@')[0] === myNum);
               return {
-                id:          m.id._serialized,
-                body:        m.body || '',
-                timestamp:   m.t,
-                author:      m.author ? m.author._serialized : null,
+                id:               m.id._serialized,
+                body:             m.body || '',
+                timestamp:        m.t,
+                author:           m.author ? m.author._serialized : null,
                 isMentioned,
                 mentionedJidList: jids
               };
@@ -399,7 +524,7 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
         }
       }
       return out;
-    }, chatIds, messageCutoff, myWhatsAppNumber);
+    }, chatIds, messageCutoff, session.myWhatsAppNumber);
   } catch(e) {
     console.error('Store evaluate failed:', e.message);
   }
@@ -412,7 +537,7 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
     const isGroup = meta.isGroup;
     fetchedCount++;
 
-    io.emit('progress', {
+    io.to(sessionId).emit('progress', {
       message: `Reading ${fetchedCount}/${totalChats}: "${chatDisplayName}"`,
       percent: Math.round((fetchedCount / totalChats) * 50)
     });
@@ -429,11 +554,11 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
     totalMessages += rawMsgs.length;
 
     const uniqueAuthors = [...new Set(rawMsgs.map(m => m.author).filter(Boolean))];
-    await Promise.all(uniqueAuthors.map(a => resolveContactName(a, a)));
+    await Promise.all(uniqueAuthors.map(a => resolveContactName(session, a, a)));
 
-    const taggedLines    = []; // @mention or name found — AI enriches
-    const otherLines     = []; // AI decides if task or not
-    const guaranteedTasks = []; // @mention only — 100% a task, shown even if AI fails
+    const taggedLines     = [];
+    const otherLines      = [];
+    const guaranteedTasks = [];
 
     for (const msg of rawMsgs) {
       if (doneIds.has(msg.id)) continue;
@@ -441,12 +566,11 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
       const date   = new Date(msg.timestamp * 1000).toLocaleDateString('en-IN',
         { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
       const sender = msg.author
-        ? (contactCache.get(msg.author) || msg.author)
+        ? (session.contactCache.get(msg.author) || msg.author)
         : chatDisplayName;
 
-      // isMentioned was resolved inside evaluate() using the actual WA store
       const isMentioned = msg.isMentioned ||
-        (!myWhatsAppNumber && (msg.mentionedJidList || []).length > 0);
+        (!session.myWhatsAppNumber && (msg.mentionedJidList || []).length > 0);
       const nameInText  = userName.length >= 2 &&
         msg.body.toLowerCase().includes(userName.toLowerCase());
       const isDirectChat = !isGroup;
@@ -456,24 +580,17 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
         ? 'urgent' : 'normal';
 
       if (isMentioned) {
-        // @mention — guaranteed task regardless of AI result
         guaranteedTasks.push({
           task: msg.body.slice(0, 120), assignedBy: sender, date,
           originalMessage: msg.body.slice(0, 150), priority, isGroup,
           chatName: chatDisplayName, chatId, messageId: msg.id, matchType: 'tagged'
         });
         taggedLines.push({ line: `${chatDisplayName}|${sender}|${date}|${msg.id}|[TAGGED] ${msg.body.slice(0, 400)}` });
-
       } else if (nameInText) {
-        // Name literally appears in message — AI decides if it's a task
         taggedLines.push({ line: `${chatDisplayName}|${sender}|${date}|${msg.id}|[NAMED] ${msg.body.slice(0, 400)}` });
-
       } else if (isDirectChat) {
-        // Personal DM — AI decides if it's a task or just conversation
         otherLines.push({ line: `${chatDisplayName}|${sender}|${date}|${msg.id}|[DIRECT] ${msg.body.slice(0, 400)}` });
-
       } else {
-        // Group message, no @mention, no name — AI decides
         otherLines.push({ line: `${chatDisplayName}|${sender}|${date}|${msg.id}|${msg.body.slice(0, 400)}` });
       }
     }
@@ -490,26 +607,23 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
   }
 
   const analyzable = chatDataList.length;
-  console.log(`\n=== FETCH DONE: ${analyzable} chats have messages, totalMessages=${totalMessages} ===`);
+  console.log(`\n=== [${sessionId.slice(0, 8)}] FETCH DONE: ${analyzable} chats have messages, totalMessages=${totalMessages} ===`);
 
   if (analyzable === 0) {
-    io.emit('tasks_batch', { tasks: [], chatsComplete: 0, totalChats, totalMessages, done: true, isIncremental });
+    io.to(sessionId).emit('tasks_batch', { tasks: [], chatsComplete: 0, totalChats, totalMessages, done: true, isIncremental });
     return;
   }
 
-  io.emit('loading', { message: `Analyzing ${analyzable} chats with AI (${GROQ_LANES} parallel lanes)…` });
+  io.to(sessionId).emit('loading', { message: `Analyzing ${analyzable} chats with AI (${GROQ_LANES} parallel lanes)…` });
 
   // ══ PIPELINE 2 — AI analysis (2 Groq lanes + global rate limiter) ══════
   let chatsComplete = 0;
 
   await parallel(chatDataList, GROQ_LANES, async ({ chatId: cid, chatDisplayName, isGroup, lines, guaranteedTasks }) => {
-    // Start with guaranteed tasks (no AI needed — 100% reliable)
     let chatTasks = [...(guaranteedTasks || [])];
     const guaranteedMsgIds = new Set(chatTasks.map(t => t.messageId).filter(Boolean));
 
-    // AI pass — only if there are lines to analyze
     if (lines.length > 0) {
-      // Split into 15 KB chunks (smaller = fewer tokens = less chance of timeout)
       const CHUNK_LIMIT = 15000;
       const chunks = [];
       let current  = '';
@@ -531,7 +645,6 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
           console.log(`    chunk ${ci + 1}/${chunks.length} raw (first 200): ${raw.slice(0, 200)}`);
           const parsed = parseTasks(raw);
           console.log(`    chunk ${ci + 1}/${chunks.length} parsed: ${parsed.length} tasks`);
-          // Only add AI tasks that aren't already in guaranteedTasks
           for (const t of parsed) {
             t.chatId = cid;
             t.isGroup = isGroup;
@@ -541,7 +654,6 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
           }
         } catch (err) {
           console.error(`  [AI ERROR] "${chatDisplayName}" chunk ${ci + 1}:`, err.message);
-          // Guaranteed tasks still survive even if AI fails
         }
       }
     } else {
@@ -567,11 +679,11 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
     chatsComplete++;
     const done = chatsComplete === analyzable;
 
-    io.emit('progress', {
+    io.to(sessionId).emit('progress', {
       message: `AI: ${chatsComplete}/${analyzable} chats — "${chatDisplayName}"`,
-      percent: 50 + Math.round((chatsComplete / analyzable) * 50) // 50-100% for AI phase
+      percent: 50 + Math.round((chatsComplete / analyzable) * 50)
     });
-    io.emit('tasks_batch', {
+    io.to(sessionId).emit('tasks_batch', {
       tasks: chatTasks,
       chatsComplete,
       totalChats: analyzable,
@@ -581,18 +693,17 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
     });
   });
 
-  console.log(`\n=== SCAN COMPLETE: ${allFoundTasks.length} total tasks found ===\n`);
+  console.log(`\n=== [${sessionId.slice(0, 8)}] SCAN COMPLETE: ${allFoundTasks.length} total tasks found ===\n`);
 
   // ── Persist: merge new tasks with old incomplete ones ─────────────────────
   const newMsgIds   = new Set(allFoundTasks.map(t => t.messageId).filter(Boolean));
-  // Carry over old pending tasks NOT re-detected in this scan and NOT marked done
   const carriedOver = oldPending.filter(t => {
-    if (t.messageId && doneIds.has(t.messageId)) return false; // drop done ones
-    if (t.messageId && newMsgIds.has(t.messageId)) return false; // already in new list
+    if (t.messageId && doneIds.has(t.messageId)) return false;
+    if (t.messageId && newMsgIds.has(t.messageId)) return false;
     return true;
   });
 
-  writeLastScan({
+  writeLastScan(sessionId, {
     lastScanTime: Date.now(),
     chatTimes:    {},
     doneIds:      [...doneIds],
@@ -602,52 +713,6 @@ async function processChatsBatched(chatIds, userName, userDesignation) {
     ]
   });
 }
-
-// POST /api/analyze — starts batched scan, streams results via socket events
-app.post('/api/analyze', (req, res) => {
-  if (!isReady) return res.status(503).json({ error: 'WhatsApp not ready' });
-  const { chatIds = [], userName = '', userDesignation = '' } = req.body;
-
-  if (!userName.trim()) return res.status(400).json({ error: 'userName is required' });
-  if (!chatIds.length)  return res.status(400).json({ error: 'No chats selected' });
-
-  res.json({ started: true, totalChats: chatIds.length });
-
-  processChatsBatched(chatIds, userName, userDesignation).catch(err => {
-    console.error('Analyze error:', err);
-    io.emit('analyze_error', { message: err.message });
-  });
-});
-
-// POST /api/done — send done reply in chat and remove task from pending store
-app.post('/api/done', async (req, res) => {
-  if (!isReady) return res.status(503).json({ error: 'WhatsApp not ready' });
-  const { chatId, taskText, assignedBy, messageId, taskUid } = req.body;
-  if (!chatId) return res.status(400).json({ error: 'chatId required' });
-
-  try {
-    // Remove from pending store
-    const pending = readPendingTasks();
-    const updated = pending.filter(t => {
-      if (messageId && t.messageId === messageId) return false;
-      if (taskUid && t._uid === taskUid) return false;
-      return true;
-    });
-    if (updated.length !== pending.length) writePendingTasks(updated);
-
-    // Record the messageId as done so it never comes back
-    if (messageId) {
-      const doneIds = readDoneIds();
-      doneIds.add(messageId);
-      writeDoneIds(doneIds);
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Done error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 const PORT = process.env.PORT || 3002;
 server.listen(PORT, () => {
